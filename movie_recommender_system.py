@@ -1,159 +1,181 @@
 import pandas
 
-#reading and preparing our data
+#load in data
 
-movies_dataframe = pandas.read_csv("movies.csv")
-movies_dataframe.set_index("movieId", inplace=True)
+rating_features = ["user id", "movie id", "rating", "timestamp"]
+ratings_dataframe = pandas.read_csv("u.data",
+                                     sep="\t",
+                                     names=rating_features,
+                                     encoding="ISO-8859-1")
 
-ratings_dataframe=pandas.read_csv("ratings.csv")
 
-total_counts = ratings_dataframe["movieId"].value_counts()
+movie_features=["movie id", "movie title", "release date", "video release date",
+                 "IMDB URL", "unknown", "Action", "Adventure", "Animation", "childrens",
+                 "Comedy", "Crime", "Documentary", "Drama", "Fantasy", "Film-Noir",
+                 "Horror", "Musical", "Mystery", "Romance", "Sci-Fi", "Thriller", "War",
+                 "Western"]
+movies_dataframe=pandas.read_csv("u.item",
+                                 sep="|",
+                                 names=movie_features,
+                                 encoding="ISO-8859-1")
 
-movies_dataframe["ratingsCount"] = total_counts
+user_features=["user id", "age", "gender", "occupation", "zip code"]
+users_dataframe=pandas.read_csv("u.user", sep="|", names=user_features, encoding="ISO-8859-1")
 
-SEGMENT_LENGTH = 10
+#Process Data
 
-#print(movies_dataframe.sort_values("ratingsCount", ascending=False).head(SEGMENT_LENGTH))
+NUMBER_OF_GROUPS=5
+users_dataframe["age group"]=pandas.qcut(users_dataframe["age"], q=NUMBER_OF_GROUPS, precision=0)
 
-average_ratings = ratings_dataframe.groupby("movieId").mean()["rating"]
+merged_dataframes=pandas.merge(pandas.merge(ratings_dataframe,
+                                            users_dataframe[["user id",
+                                                             "age group",
+                                                             "gender",
+                                                             "occupation"]],
+                                            on = "user id",
+                                            how="left"),
+                                movies_dataframe,
+                                on="movie id",
+                                how="left")
 
-movies_dataframe["averageRating"] = average_ratings
+merged_dataframes.drop(["movie id", "movie title", "release date", "timestamp",
+                        "unknown", "IMDB URL", "video release date"],
+                        axis =1,
+                        inplace = True)
 
-#print(movies_dataframe.sort_values(["ratingsCount", "averageRating"], ascending=False).head(SEGMENT_LENGTH))
+#Build Categories
 
-MINIMUM_RATINGS_COUNT = 100
+merged_dataframes["age group"]=pandas.Categorical(merged_dataframes["age group"])
+age_group_dummies=pandas.get_dummies(merged_dataframes["age group"])
 
-minimum_ratings_subset = movies_dataframe.query(f"ratingsCount >= {MINIMUM_RATINGS_COUNT}").sort_values("ratingsCount")
+merged_dataframes["gender"]=pandas.Categorical(merged_dataframes["gender"])
+gender_dummies=pandas.get_dummies(merged_dataframes["gender"])
 
-#print(minimum_ratings_subset)
+merged_dataframes["occupation"]=pandas.Categorical(merged_dataframes["occupation"])
+occupation_dummies=pandas.get_dummies(merged_dataframes["occupation"])
 
-#Calculate similarity between Users
+merged_dataframes=pandas.concat([merged_dataframes,
+                                 age_group_dummies,
+                                 gender_dummies,
+                                 occupation_dummies],
+                                axis=1)
 
+merged_dataframes.drop(["age group",
+                        "gender",
+                        "occupation"],
+                        axis=1,
+                        inplace=True)
+
+#Build a ridge regression model
+
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import GridSearchCV
 import numpy
 
+ridge_model=Ridge()
+alpha=[]
+ALPHA_LENGTH=7
+NUMBER_OF_FOLDS=5
+
+for i in range(ALPHA_LENGTH):
+    alpha.extend(numpy.arange(10**(i-5), 10**(i-4), 10**(i-5)*2))
+
+parameters={ "alpha": alpha }
+
+ridge_cross_validation=GridSearchCV(estimator=ridge_model,
+                                    param_grid=parameters,
+                                    scoring="neg_mean_absolute_error",
+                                    cv=NUMBER_OF_FOLDS,
+                                    return_train_score=True,
+                                    verbose=1)
+
+COLUMN_AXIS=1
+X=merged_dataframes.drop("rating", 
+                        axis=COLUMN_AXIS)
+X.columns=X.columns.astype(str)
+y=merged_dataframes.rating
+
+from sklearn.model_selection import train_test_split
+
+X_train, X_test, y_train, y_test=train_test_split(X, y, test_size=0.2)
+
+#ridge_cross_validation.fit(X_train, y_train)
+
+#Evaluate model error
+
 '''
-USER_1_POSITION_X = 3
-USER_1_POSITION_Y = 7.5
+ridge_cross_validation.best_estimator_
 
-USER_2_POSITION_X = 7
-USER_2_POSITION_Y = 8
-
-position_user_1 = numpy.array([USER_1_POSITION_X, USER_1_POSITION_Y])
-position_user_2 = numpy.array([USER_2_POSITION_X, USER_2_POSITION_Y])
-
-def find_distance_between_users(position_user_1, position_user_2):
-    (delta_x, delta_y) = position_user_1 - position_user_2
-    return (delta_x ** 2 + delta_y ** 2) ** (1/2)
-
-find_distance_between_users(position_user_1, position_user_2)
-'''
-def find_user_ratings(userId):
-    user_ratings = ratings_dataframe.query(f"userId == {userId}")
-    return user_ratings[["movieId", "rating"]].set_index("movieId")
-'''
-ID_OF_USER_1 = 1
-ID_OF_USER_2 = 610
-USER_1_RATINGS = find_user_ratings(ID_OF_USER_1)
-USER_2_RATINGS = find_user_ratings(ID_OF_USER_2)
-
-ratings_comparison = USER_1_RATINGS.join(USER_2_RATINGS,
-                                        lsuffix="_user1",
-                                        rsuffix="_user2").dropna()
-
-user1_compared = ratings_comparison["rating_user1"]
-user2_compared = ratings_comparison["rating_user2"]
-
-numpy.linalg.norm(user1_compared-user2_compared)
+best_alpha=1e-05
+best_alpha_ridge=Ridge(alpha=best_alpha)
+best_alpha_ridge.fit(X_train, y_train)
 '''
 
+from sklearn.metrics import mean_squared_error
 
-def find_distance_between_real_users(userId_1, userId_2):
-    rating_user1=find_user_ratings(userId_1)
-    rating_user2=find_user_ratings(userId_2)
-    ratings_comparison=rating_user1.join(rating_user2, lsuffix="_user1", rsuffix="_user2").dropna()
-    user1_compared=ratings_comparison["rating_user1"]
-    user2_compared=ratings_comparison["rating_user2"]
-    distance_between_users=numpy.linalg.norm(user1_compared - user2_compared)
-    return [userId_1, userId_2, distance_between_users]
+'''
+error = mean_squared_error(y_test, best_alpha_ridge.predict(X_test))
 
-#Find top similar Users
+#figure out top features
 
-def find_relative_distances(userId):
-    users = ratings_dataframe["userId"].unique()
-    users = users[users != userId]
-    distances=[find_distance_between_real_users(userId, every_id) for every_id in users]
-    return pandas.DataFrame(distances, columns=["singleUserId", "userId", "distance"])
+ridge_results_dataframe=pandas.DataFrame({
+    "Features": X_train.columns,
+    "coefficient": best_alpha_ridge.coef_
+})
 
-example_distances = find_relative_distances(7)
+import matplotlib.pyplot as pyplot
 
-def find_top_similar_users(userId):
-    distances_to_user = find_relative_distances(userId)
-    distances_to_user = distances_to_user.sort_values("distance")
-    distances_to_user = distances_to_user.set_index("userId")
-    return distances_to_user
+figure, axes = pyplot.subplots(figsize=[7, 15])
 
-#recommend a movie based on user similarity
+import seaborn
 
-def make_movie_recommendation(userId):
-    user_ratings = find_user_ratings(userId)
-    top_similar_users = find_top_similar_users(userId)
-    MOST_SIMILAR = 0
-    most_similar_user = top_similar_users.iloc[MOST_SIMILAR]
-    most_similar_user_ratings = find_user_ratings(most_similar_user.name)
-    unwatched_movies = most_similar_user_ratings.drop(user_ratings.index,
-                                                      errors = "ignore")
-    unwatched_movies = unwatched_movies.sort_values("rating", ascending=False)
-    recommended_movies = unwatched_movies.join(movies_dataframe)
-    return recommended_movies
+seaborn.barplot(x= "coefficient",
+                y="Features",
+                ax = axes,
+                data=ridge_results_dataframe)
 
-#Recommend movies based on K nearest user
+#removed_features=ridge_results_dataframe.coefficient == float(0).sum()
 
-NUMBER_OF_NEIGHBORS=5
+ridge_results_dataframe.sort_values(by="coefficient",
+                                    ascending=False,
+                                    inplace=True)
 
-def find_k_nearest_neighbors(userId, k=NUMBER_OF_NEIGHBORS):
-    distances_to_user = find_relative_distances(userId)
-    distances_to_user=distances_to_user.sort_values("distance")
-    distances_to_user=distances_to_user.set_index("userId")
-    return distances_to_user.head(k)
+ridge_results_dataframe.reset_index(inplace=True, drop=True)
 
-def make_recommendation_with_knn(userId, k=NUMBER_OF_NEIGHBORS):
-    top_k_neighbors=find_k_nearest_neighbors(userId)
-    ratings_by_index=ratings_dataframe.set_index("userId")
-    top_similar_ratings=ratings_by_index.loc[top_k_neighbors.index]
-    top_similar_ratings_average=top_similar_ratings.groupby("movieId").mean()[["rating"]]
-    recommended_movie=top_similar_ratings_average.sort_values("rating", ascending=False)
-    return recommended_movie.join(movies_dataframe)
+NUMBER_OF_TOP_FEATURES=15
 
-#Create a sample user for testing
+ridge_results_dataframe = ridge_results_dataframe.iloc[:NUMBER_OF_TOP_FEATURES]
 
-import random
 
-NUMBER_OF_MOVIES=14
-MINIMUM_NUMBER=1
-ROWS_INDEX=0
-MAXIMUM_NUMBER=movies_dataframe.shape[ROWS_INDEX]
-test_user_watched_movies = []
-MINIMUM_RATING=0
-MAXIMUM_RATING=5
-test_user_ratings=[]
+figure, axes =pyplot.subplots(figsize=[10, 10])
+seaborn.barplot(y="Features",
+                x="coefficient",
+                ax= axes,
+                data= ridge_results_dataframe)
+'''
 
-for i in range(0, NUMBER_OF_MOVIES):
-    random_movie_index=random.randint(MINIMUM_NUMBER, MAXIMUM_NUMBER)
-    test_user_watched_movies.append(random_movie_index)
+#Build a Lasso Regression Model
 
-for index in range(0, NUMBER_OF_MOVIES):
-    random_rating=random.randint(MINIMUM_RATING, MAXIMUM_RATING+1)
-    test_user_ratings.append(random_rating)
+from sklearn.linear_model import Lasso
 
-user_data=[list(index) for index in zip(test_user_watched_movies, test_user_ratings)]
+lasso_model = Lasso()
 
-def create_new_user(user_data):
-    new_user_id=ratings_dataframe["userId"].max()+1
-    new_user_dataframe=pandas.DataFrame(user_data, columns= ["movieId", "rating"])
-    new_user_dataframe["userId"]=new_user_id
-    return pandas.concat([ratings_dataframe, new_user_dataframe])
+lasso_cross_validation = GridSearchCV(estimator = lasso_model,
+             param_grid= parameters,
+             scoring = "neg_mean_absolute_error",
+             cv = NUMBER_OF_FOLDS,
+             return_train_score = True,
+             verbose = 1)
 
-#Recommend movies to sample user
+lasso_cross_validation.fit(X_train, y_train)
 
-NEW_USER_ID=611
-print(make_recommendation_with_knn(NEW_USER_ID))
+lasso_cross_validation.best_estimator_
+
+best_alpha_value_lasso = 1e-05
+
+best_alpha_lasso_model = Lasso(alpha = best_alpha_value_lasso)
+
+best_alpha_lasso_model.fit(X_train, y_train)
+
+lasso_error = mean_squared_error(y_test,
+                   best_alpha_lasso_model.predict(X_test))
